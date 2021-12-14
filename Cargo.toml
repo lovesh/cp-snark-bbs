@@ -14,9 +14,9 @@ ark-r1cs-std = { version = "^0.3.0", default-features = false }
 ark-relations = { version = "^0.3.0", default-features = false }
 rayon = { version = "1", optional = true }
 
-[dependencies.legogro16]
+[dependencies.legogroth16]
 git = "https://github.com/lovesh/legogro16"
-branch = "debugging"
+branch = "modified"
 #path = "/home/lovesh/dev/legogro16"
 
 [dev-dependencies]
@@ -25,5 +25,5 @@ ark-bls12-381 = { version = "^0.3.0", default-features = false, features = [ "cu
 
 [features]
 default = ["std", "parallel"]
-std = ["ark-ff/std", "ark-ec/std", "ark-relations/std", "ark-std/std", "bbs_plus/std", "proof_system/std" ]
-parallel = ["ark-ff/parallel", "ark-ec/parallel", "ark-std/parallel", "rayon", "bbs_plus/parallel", "proof_system/parallel"]
+std = ["ark-ff/std", "ark-ec/std", "ark-relations/std", "ark-std/std", "bbs_plus/std", "proof_system/std", "legogroth16/std" ]
+parallel = ["ark-ff/parallel", "ark-ec/parallel", "ark-std/parallel", "rayon", "bbs_plus/parallel", "proof_system/parallel", "legogroth16/parallel"]

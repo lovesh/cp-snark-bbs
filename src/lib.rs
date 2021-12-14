@@ -4,6 +4,10 @@ use ark_r1cs_std::prelude::{AllocVar, AllocationMode, EqGadget};
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 use ark_std::{cmp::Ordering, vec, vec::Vec};
 
+// NOTE: For range check, the following circuits assume that the number are of same size as field
+// elements which might not always be true in practice. If the upper bound on the byte-size of the numbers
+// is known, then the no. of constraints in the circuit can be reduced.
+
 /// Enforce min < value < max
 #[derive(Clone)]
 struct BoundCheckCircuit<F: Field> {
@@ -131,7 +135,8 @@ impl<ConstraintF: PrimeField> ConstraintSynthesizer<ConstraintF>
         };
 
         // Note: Its important to allocate witness variables that are committed so allocate variables for
-        // all in `smalls` and then all in `larges` and then variables for sum
+        // all in `smalls` and then all in `larges` and then variables for sum and the Schnorr proof
+        // for the commitment assumes that.
 
         for v in smalls {
             let v = FpVar::new_variable(
@@ -183,11 +188,10 @@ mod tests {
     };
     use bbs_plus::prelude::{KeypairG2, SignatureG1, SignatureParamsG1};
     use blake2::Blake2b;
-    use legogro16::verifier_new::get_commitment_to_witnesses;
-    use legogro16::{
-        generator_new::generate_random_parameters_new, prepare_verifying_key,
-        prover_new::create_random_proof_new, verifier::verify_proof,
-        verifier_new::verify_commitment_new,
+    use legogroth16::verifier::get_commitment_to_witnesses;
+    use legogroth16::{
+        create_random_proof, generate_random_parameters, prepare_verifying_key,
+        prover::verify_commitment, verifier::verify_proof,
     };
     use proof_system::prelude::{
         EqualWitnesses, MetaStatement, MetaStatements, Proof, ProofSpec, Statement, Statements,
@@ -197,6 +201,7 @@ mod tests {
         PedersenCommitment as PedersenCommitmentStmt, PoKBBSSignatureG1 as PoKSignatureBBSG1Stmt,
     };
     use proof_system::witness::PoKBBSSignatureG1 as PoKSignatureBBSG1Wit;
+    use std::time::Instant;
 
     type Fr = <Bls12_381 as PairingEngine>::Fr;
     type ProofG1 = Proof<Bls12_381, G1Affine, Fr, Blake2b>;
@@ -259,9 +264,9 @@ mod tests {
             max: None,
             value: None,
         };
-        let params = generate_random_parameters_new::<Bls12_381, _, _>(
+        let params = generate_random_parameters::<Bls12_381, _, _>(
             circuit,
-            &pedersen_bases,
+            pedersen_bases.clone(),
             commit_witness_count,
             &mut rng,
         )
@@ -279,52 +284,53 @@ mod tests {
 
         let min = Fr::from(100u64);
         let max = Fr::from(107u64);
+
         let circuit = BoundCheckCircuit {
             min: Some(min),
             max: Some(max),
             value: Some(val),
         };
 
-        // Prover creates Groth16 proof
-        let proof = create_random_proof_new(circuit, v, link_v, &params, &mut rng).unwrap();
-
-        // Verifies verifies Groth16 proof
-        assert!(verify_proof(&pvk, &proof).unwrap());
+        let start = Instant::now();
+        // Prover creates LegoGroth16 proof
+        let snark_proof = create_random_proof(circuit, v, link_v, &params, &mut rng).unwrap();
+        let t1 = start.elapsed();
+        println!("Time taken to create LegoGroth16 proof {:?}", t1);
 
         // This is not done by the verifier but the prover as safety check that the commitment is correct
         assert!(
-            verify_commitment_new(&params.vk, &proof, &[min, max], &[val], &v, &link_v).unwrap()
+            verify_commitment(&params.vk, &snark_proof, &[min, max], &[val], &v, &link_v).unwrap()
         );
-        assert!(!verify_commitment_new(
+        assert!(!verify_commitment(
             &params.vk,
-            &proof,
+            &snark_proof,
             &[min, Fr::from(105u64)],
             &[val],
             &v,
             &link_v
         )
         .unwrap());
-        assert!(!verify_commitment_new(
+        assert!(!verify_commitment(
             &params.vk,
-            &proof,
+            &snark_proof,
             &[min, Fr::from(104u64)],
             &[val],
             &v,
             &link_v
         )
         .unwrap());
-        assert!(!verify_commitment_new(
+        assert!(!verify_commitment(
             &params.vk,
-            &proof,
+            &snark_proof,
             &[Fr::from(105u64), max],
             &[val],
             &v,
             &link_v
         )
         .unwrap());
-        assert!(!verify_commitment_new(
+        assert!(!verify_commitment(
             &params.vk,
-            &proof,
+            &snark_proof,
             &[Fr::from(106u64), max],
             &[val],
             &v,
@@ -334,12 +340,13 @@ mod tests {
 
         // Since both prover and verifier know the public inputs, they can independently get the commitment to the witnesses
         let commitment_to_witness =
-            get_commitment_to_witnesses(&params.vk, &proof, &[min, max]).unwrap();
+            get_commitment_to_witnesses(&params.vk, &snark_proof, &[min, max]).unwrap();
 
         // The bases and commitment opening
         let bases = vec![pedersen_bases[3].clone(), pedersen_bases[4].clone()];
         let committed = vec![val, link_v];
 
+        let start = Instant::now();
         // Prove the equality of message in the BBS+ signature and `commitment_to_witness`
         let mut statements = Statements::new();
         statements.add(Statement::PoKBBSSignatureG1(PoKSignatureBBSG1Stmt {
@@ -378,8 +385,21 @@ mod tests {
         witnesses.add(Witness::PedersenCommitment(committed));
 
         let proof = ProofG1::new(&mut rng, proof_spec.clone(), witnesses.clone(), None).unwrap();
+        let t2 = start.elapsed();
+        println!("Time taken to create composite proof {:?}", t2);
+        println!("Total time taken to create proof {:?}", t1 + t2);
 
+        // Verifies verifies LegoGroth16 proof
+        let start = Instant::now();
+        assert!(verify_proof(&pvk, &snark_proof).unwrap());
+        let t1 = start.elapsed();
+        println!("Time taken to verify LegoGroth16 proof {:?}", t1);
+
+        let start = Instant::now();
         proof.verify(proof_spec, None).unwrap();
+        let t2 = start.elapsed();
+        println!("Time taken to verify composite proof {:?}", t2);
+        println!("Total time taken to verify proof {:?}", t1 + t2);
     }
 
     #[test]
@@ -409,9 +429,9 @@ mod tests {
             max: None,
             values: None,
         };
-        let params = generate_random_parameters_new::<Bls12_381, _, _>(
+        let params = generate_random_parameters::<Bls12_381, _, _>(
             circuit,
-            &pedersen_bases,
+            pedersen_bases.clone(),
             commit_witness_count,
             &mut rng,
         )
@@ -445,19 +465,19 @@ mod tests {
             values: Some(vals.clone()),
         };
 
+        let start = Instant::now();
         // Prover creates Groth16 proof
-        let proof = create_random_proof_new(circuit, v, link_v, &params, &mut rng).unwrap();
-
-        // Verifies verifies Groth16 proof
-        assert!(verify_proof(&pvk, &proof).unwrap());
+        let snark_proof = create_random_proof(circuit, v, link_v, &params, &mut rng).unwrap();
+        let t1 = start.elapsed();
+        println!("Time taken to create LegoGroth16 proof {:?}", t1);
 
         // This is not done by the verifier but the prover as safety check that the commitment is correct
         assert!(
-            verify_commitment_new(&params.vk, &proof, &[min, max], &vals, &v, &link_v).unwrap()
+            verify_commitment(&params.vk, &snark_proof, &[min, max], &vals, &v, &link_v).unwrap()
         );
-        assert!(!verify_commitment_new(
+        assert!(!verify_commitment(
             &params.vk,
-            &proof,
+            &snark_proof,
             &[min, Fr::from(412u64)],
             &vals,
             &v,
@@ -465,9 +485,9 @@ mod tests {
         )
         .unwrap());
 
-        assert!(!verify_commitment_new(
+        assert!(!verify_commitment(
             &params.vk,
-            &proof,
+            &snark_proof,
             &[Fr::from(420u64), max],
             &vals,
             &v,
@@ -477,7 +497,7 @@ mod tests {
 
         // Since both prover and verifier know the public inputs, they can independently get the commitment to the witnesses
         let commitment_to_witnesses =
-            get_commitment_to_witnesses(&params.vk, &proof, &[min, max]).unwrap();
+            get_commitment_to_witnesses(&params.vk, &snark_proof, &[min, max]).unwrap();
 
         // The bases and commitment opening
         let bases = vec![
@@ -491,6 +511,7 @@ mod tests {
         committed.push(link_v);
 
         // Prove the equality of messages in the BBS+ signature and `commitment_to_witnesses`
+        let start = Instant::now();
         let mut statements = Statements::new();
         statements.add(Statement::PoKBBSSignatureG1(PoKSignatureBBSG1Stmt {
             params: sig_params.clone(),
@@ -530,8 +551,21 @@ mod tests {
         witnesses.add(Witness::PedersenCommitment(committed));
 
         let proof = ProofG1::new(&mut rng, proof_spec.clone(), witnesses.clone(), None).unwrap();
+        let t2 = start.elapsed();
+        println!("Time taken to create composite proof {:?}", t2);
+        println!("Total time taken to create proof {:?}", t1 + t2);
 
+        let start = Instant::now();
+        // Verifies verifies Groth16 proof
+        assert!(verify_proof(&pvk, &snark_proof).unwrap());
+        let t1 = start.elapsed();
+        println!("Time taken to verify LegoGroth16 proof {:?}", t1);
+
+        let start = Instant::now();
         proof.verify(proof_spec, None).unwrap();
+        let t2 = start.elapsed();
+        println!("Time taken to verify composite proof {:?}", t2);
+        println!("Total time taken to verify proof {:?}", t1 + t2);
     }
 
     #[test]
@@ -570,9 +604,9 @@ mod tests {
             smalls: None,
             larges: None,
         };
-        let params = generate_random_parameters_new::<Bls12_381, _, _>(
+        let params = generate_random_parameters::<Bls12_381, _, _>(
             circuit,
-            &pedersen_bases,
+            pedersen_bases.clone(),
             commit_witness_count,
             &mut rng,
         )
@@ -618,24 +652,25 @@ mod tests {
         };
 
         // Prover creates Groth16 proof
-        let proof = create_random_proof_new(circuit, v, link_v, &params, &mut rng).unwrap();
-
-        // Verifies verifies Groth16 proof
-        assert!(verify_proof(&pvk, &proof).unwrap());
+        let start = Instant::now();
+        let snark_proof = create_random_proof(circuit, v, link_v, &params, &mut rng).unwrap();
+        let t1 = start.elapsed();
+        println!("Time taken to create LegoGroth16 proof {:?}", t1);
 
         // This is not done by the verifier but the prover as safety check that the commitment is correct
         let mut wits = vec![];
         wits.extend_from_slice(&smalls);
         wits.extend_from_slice(&larges);
 
-        assert!(verify_commitment_new(&params.vk, &proof, &[], &wits, &v, &link_v).unwrap());
+        assert!(verify_commitment(&params.vk, &snark_proof, &[], &wits, &v, &link_v).unwrap());
 
-        assert!(!verify_commitment_new(&params.vk, &proof, &[], &smalls, &v, &link_v).unwrap());
+        assert!(!verify_commitment(&params.vk, &snark_proof, &[], &smalls, &v, &link_v).unwrap());
 
-        assert!(!verify_commitment_new(&params.vk, &proof, &[], &larges, &v, &link_v).unwrap());
+        assert!(!verify_commitment(&params.vk, &snark_proof, &[], &larges, &v, &link_v).unwrap());
 
         // Since both prover and verifier know the public inputs, they can independently get the commitment to the witnesses
-        let commitment_to_witnesses = get_commitment_to_witnesses(&params.vk, &proof, &[]).unwrap();
+        let commitment_to_witnesses =
+            get_commitment_to_witnesses(&params.vk, &snark_proof, &[]).unwrap();
 
         // The bases and commitment opening
         let bases = pedersen_bases.as_slice()[1..].to_vec();
@@ -643,6 +678,7 @@ mod tests {
         committed.push(link_v);
 
         // Prove the equality of messages in the 2 BBS+ signatures and `commitment_to_witnesses`
+        let start = Instant::now();
         let mut statements = Statements::new();
         statements.add(Statement::PoKBBSSignatureG1(PoKSignatureBBSG1Stmt {
             params: sig_params_1.clone(),
@@ -708,7 +744,20 @@ mod tests {
         witnesses.add(Witness::PedersenCommitment(committed));
 
         let proof = ProofG1::new(&mut rng, proof_spec.clone(), witnesses.clone(), None).unwrap();
+        let t2 = start.elapsed();
+        println!("Time taken to create composite proof {:?}", t2);
+        println!("Total time taken to create proof {:?}", t1 + t2);
 
+        // Verifies verifies LegoGroth16 proof
+        let start = Instant::now();
+        assert!(verify_proof(&pvk, &snark_proof).unwrap());
+        let t1 = start.elapsed();
+        println!("Time taken to verify LegoGroth16 proof {:?}", t1);
+
+        let start = Instant::now();
         proof.verify(proof_spec, None).unwrap();
+        let t2 = start.elapsed();
+        println!("Time taken to verify composite proof {:?}", t2);
+        println!("Total time taken to verify proof {:?}", t1 + t2);
     }
 }
