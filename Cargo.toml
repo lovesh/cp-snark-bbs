@@ -16,7 +16,7 @@ rayon = { version = "1", optional = true }
 
 [dependencies.legogroth16]
 git = "https://github.com/lovesh/legogro16"
-branch = "modified"
+branch = "comm-wit"
 #path = "/home/lovesh/dev/legogro16"
 
 [dev-dependencies]

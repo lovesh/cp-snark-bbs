@@ -2,7 +2,7 @@
 
 Using LegoGroth16, the cc-SNARK specified in the [LegoSNARK paper](https://eprint.iacr.org/2019/142), appendix H.5, to prove properties of messages signed in a BBS+ signature.
 
-The cc-SNARK is [here](https://github.com/lovesh/legogro16/tree/modified)
+The cc-SNARK is [here](https://github.com/lovesh/legogro16/tree/comm-wit)
 
 ## Examples
 Following tests demonstrate some potential use cases. Run the tests in release mode with `--nocapture` to see the time taken by proof generation and verification.
