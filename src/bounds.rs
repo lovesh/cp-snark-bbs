@@ -59,7 +59,7 @@ mod tests {
         UniformRand,
     };
     use legogroth16::{
-        create_random_proof, generate_random_parameters, prepare_verifying_key, verify_commitment,
+        create_random_proof, generate_random_parameters, prepare_verifying_key, verify_witness_commitment,
         verify_proof,
     };
     use proof_system::prelude::{
@@ -84,8 +84,6 @@ mod tests {
         let commit_witness_count = 1;
 
         let start = Instant::now();
-        // Generators for the Pedersen commitment. Its important that prover does not discrete log of these wrt each other
-        let link_gens = get_link_public_gens(&mut rng, commit_witness_count + 1);
 
         let circuit = BoundCheckCircuit::<Fr> {
             min: None,
@@ -94,7 +92,6 @@ mod tests {
         };
         let params = generate_random_parameters::<Bls12_381, _, _>(
             circuit,
-            link_gens.clone(),
             commit_witness_count,
             &mut rng,
         )
@@ -105,8 +102,7 @@ mod tests {
 
         // Create commitment randomness
         let v = Fr::rand(&mut rng);
-        let link_v = Fr::rand(&mut rng);
-
+        
         // Message whose bounds need to be proved, i.e. `min < val < max` needs to be proved
         let m_idx = 4;
         let val = messages[m_idx].clone();
@@ -122,30 +118,29 @@ mod tests {
 
         let start = Instant::now();
         // Prover creates LegoGroth16 proof
-        let snark_proof = create_random_proof(circuit, v, link_v, &params, &mut rng).unwrap();
+        let snark_proof = create_random_proof(circuit, v, &params, &mut rng).unwrap();
         let t1 = start.elapsed();
         println!("Time taken to create LegoGroth16 proof {:?}", t1);
 
         // This is not done by the verifier but the prover as safety check that the commitment is correct
-        verify_commitment(&params.vk, &snark_proof, 2, &[val], &v, &link_v).unwrap();
-        assert!(verify_commitment(&params.vk, &snark_proof, 1, &[val], &v, &link_v).is_err());
-        assert!(verify_commitment(&params.vk, &snark_proof, 3, &[val], &v, &link_v).is_err());
-        assert!(verify_commitment(
+        verify_witness_commitment(&params.vk, &snark_proof, 2, &[val], &v).unwrap();
+        assert!(verify_witness_commitment(&params.vk, &snark_proof, 1, &[val], &v).is_err());
+        assert!(verify_witness_commitment(&params.vk, &snark_proof, 3, &[val], &v).is_err());
+        assert!(verify_witness_commitment(
             &params.vk,
             &snark_proof,
             2,
             &[Fr::from(106u64)],
-            &v,
-            &link_v
+            &v
         )
         .is_err());
 
         // Since both prover and verifier know the public inputs, they can independently get the commitment to the witnesses
-        let commitment_to_witness = snark_proof.link_d;
+        let commitment_to_witness = snark_proof.d;
 
         // The bases and commitment opening
-        let bases = link_gens.pedersen_gens.clone();
-        let committed = vec![val, link_v];
+        let bases = vec![params.vk.gamma_abc_g1[1+2], params.vk.eta_gamma_inv_g1];
+        let committed = vec![val, v];
 
         let start = Instant::now();
         // Prove the equality of message in the BBS+ signature and `commitment_to_witness`

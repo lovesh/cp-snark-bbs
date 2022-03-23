@@ -1,11 +1,7 @@
-mod bounds;
+pub mod bounds;
 pub mod sum;
 
-use ark_ff::{Field, PrimeField};
-use ark_r1cs_std::fields::fp::FpVar;
-use ark_r1cs_std::prelude::{AllocVar, AllocationMode, EqGadget};
-use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
-use ark_std::{cmp::Ordering, vec, vec::Vec};
+use ark_std::vec::Vec;
 
 #[cfg(test)]
 pub mod tests {
@@ -13,13 +9,10 @@ pub mod tests {
     use ark_bls12_381::{Bls12_381, G1Affine, G1Projective};
     use ark_ec::{PairingEngine, ProjectiveCurve};
     use ark_std::{
-        collections::{BTreeMap, BTreeSet},
-        rand::{rngs::StdRng, RngCore, SeedableRng},
-        UniformRand,
+        rand::RngCore,
     };
     use bbs_plus::prelude::{KeypairG2, SignatureG1, SignatureParamsG1};
     use blake2::Blake2b;
-    use legogroth16::LinkPublicGenerators;
     use proof_system::prelude::Proof;
     pub use proof_system::statement::{
         PedersenCommitment as PedersenCommitmentStmt, PoKBBSSignatureG1 as PoKSignatureBBSG1Stmt,
@@ -49,21 +42,5 @@ pub mod tests {
         let sig =
             SignatureG1::<Bls12_381>::new(rng, &messages, &keypair.secret_key, &params).unwrap();
         (messages, params, keypair, sig)
-    }
-
-    pub fn get_link_public_gens<R: RngCore, E: PairingEngine>(
-        rng: &mut R,
-        count: usize,
-    ) -> LinkPublicGenerators<E> {
-        let pedersen_gens = (0..count)
-            .map(|_| E::G1Projective::rand(rng).into_affine())
-            .collect::<Vec<_>>();
-        let g1 = E::G1Projective::rand(rng).into_affine();
-        let g2 = E::G2Projective::rand(rng).into_affine();
-        LinkPublicGenerators {
-            pedersen_gens,
-            g1,
-            g2,
-        }
     }
 }

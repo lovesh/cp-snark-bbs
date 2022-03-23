@@ -1,4 +1,4 @@
-use ark_ff::{Field, PrimeField, Zero};
+use ark_ff::{Field, PrimeField};
 use ark_r1cs_std::alloc::{AllocVar, AllocationMode};
 use ark_r1cs_std::eq::EqGadget;
 use ark_r1cs_std::fields::fp::FpVar;
@@ -144,7 +144,7 @@ mod tests {
         UniformRand,
     };
     use legogroth16::{
-        create_random_proof, generate_random_parameters, prepare_verifying_key, verify_commitment,
+        create_random_proof, generate_random_parameters, prepare_verifying_key, verify_witness_commitment,
         verify_proof,
     };
     use proof_system::prelude::{
@@ -168,9 +168,7 @@ mod tests {
 
         // 4 witnesses (messages) whose sum needs to be bounded
         let commit_witness_count = 4;
-
-        // Generators for the Pedersen commitment. Its important that prover does not discrete log of these wrt each other
-        let link_gens = get_link_public_gens(&mut rng, commit_witness_count + 1);
+        let public_inputs_count = 2;
 
         let circuit = SumBoundCheckCircuit::<Fr> {
             min: None,
@@ -179,7 +177,6 @@ mod tests {
         };
         let params = generate_random_parameters::<Bls12_381, _, _>(
             circuit,
-            link_gens.clone(),
             commit_witness_count,
             &mut rng,
         )
@@ -189,8 +186,7 @@ mod tests {
 
         // Create commitment randomness
         let v = Fr::rand(&mut rng);
-        let link_v = Fr::rand(&mut rng);
-
+       
         // Messages whose sum need to be proven bounded, i.e. `min < sum of messages < max` needs to be proved
         // Indexes of the messages
         let m_ids: [usize; 4] = [2, 3, 4, 5];
@@ -215,31 +211,31 @@ mod tests {
 
         let start = Instant::now();
         // Prover creates Groth16 proof
-        let snark_proof = create_random_proof(circuit, v, link_v, &params, &mut rng).unwrap();
+        let snark_proof = create_random_proof(circuit, v, &params, &mut rng).unwrap();
         let t1 = start.elapsed();
         println!("Time taken to create LegoGroth16 proof {:?}", t1);
 
         // This is not done by the verifier but the prover as safety check that the commitment is correct
-        verify_commitment(&params.vk, &snark_proof, 2, &vals, &v, &link_v).unwrap();
-        assert!(verify_commitment(&params.vk, &snark_proof, 1, &vals, &v, &link_v).is_err());
+        verify_witness_commitment(&params.vk, &snark_proof, 2, &vals, &v).unwrap();
+        assert!(verify_witness_commitment(&params.vk, &snark_proof, 1, &vals, &v).is_err());
 
-        assert!(verify_commitment(
+        assert!(verify_witness_commitment(
             &params.vk,
             &snark_proof,
             2,
             &[Fr::from(420u64), max],
-            &v,
-            &link_v
+            &v
         )
         .is_err());
 
         // Since both prover and verifier know the public inputs, they can independently get the commitment to the witnesses
-        let commitment_to_witnesses = snark_proof.link_d;
+        let commitment_to_witnesses = snark_proof.d;
 
         // The bases and commitment opening
-        let bases = link_gens.pedersen_gens.clone();
+        let mut bases = params.vk.gamma_abc_g1[1+public_inputs_count..1+public_inputs_count+commit_witness_count].to_vec();
+        bases.push(params.vk.eta_gamma_inv_g1);
         let mut committed = vals.to_vec();
-        committed.push(link_v);
+        committed.push(v);
 
         // Prove the equality of messages in the BBS+ signature and `commitment_to_witnesses`
         let start = Instant::now();
@@ -324,9 +320,7 @@ mod tests {
 
         // 8 witnesses (messages), 4 from each signature
         let commit_witness_count = 8;
-
-        // Generators for the Pedersen commitment. Its important that prover does not discrete log of these wrt each other
-        let link_gens = get_link_public_gens(&mut rng, commit_witness_count + 1);
+        let public_inputs_count = 0;
 
         let circuit = SumCompareCircuit::<Fr> {
             smalls: None,
@@ -334,7 +328,6 @@ mod tests {
         };
         let params = generate_random_parameters::<Bls12_381, _, _>(
             circuit,
-            link_gens.clone(),
             commit_witness_count,
             &mut rng,
         )
@@ -344,7 +337,6 @@ mod tests {
 
         // Create commitment randomness
         let v = Fr::rand(&mut rng);
-        let link_v = Fr::rand(&mut rng);
 
         // Messages from 1st signature
         // Indexes of the messages
@@ -381,7 +373,7 @@ mod tests {
 
         // Prover creates Groth16 proof
         let start = Instant::now();
-        let snark_proof = create_random_proof(circuit, v, link_v, &params, &mut rng).unwrap();
+        let snark_proof = create_random_proof(circuit, v, &params, &mut rng).unwrap();
         let t1 = start.elapsed();
         println!("Time taken to create LegoGroth16 proof {:?}", t1);
 
@@ -390,19 +382,20 @@ mod tests {
         wits.extend_from_slice(&smalls);
         wits.extend_from_slice(&larges);
 
-        verify_commitment(&params.vk, &snark_proof, 0, &wits, &v, &link_v).unwrap();
+        verify_witness_commitment(&params.vk, &snark_proof, 0, &wits, &v).unwrap();
 
-        assert!(verify_commitment(&params.vk, &snark_proof, 0, &smalls, &v, &link_v).is_err());
+        assert!(verify_witness_commitment(&params.vk, &snark_proof, 0, &smalls, &v).is_err());
 
-        assert!(verify_commitment(&params.vk, &snark_proof, 0, &larges, &v, &link_v).is_err());
+        assert!(verify_witness_commitment(&params.vk, &snark_proof, 0, &larges, &v).is_err());
 
         // Since both prover and verifier know the public inputs, they can independently get the commitment to the witnesses
-        let commitment_to_witnesses = snark_proof.link_d;
+        let commitment_to_witnesses = snark_proof.d;
 
         // The bases and commitment opening
-        let bases = link_gens.pedersen_gens.clone();
+        let mut bases = params.vk.gamma_abc_g1[1+public_inputs_count..1+public_inputs_count+commit_witness_count].to_vec();
+        bases.push(params.vk.eta_gamma_inv_g1);
         let mut committed = wits.clone();
-        committed.push(link_v);
+        committed.push(v);
 
         // Prove the equality of messages in the 2 BBS+ signatures and `commitment_to_witnesses`
         let start = Instant::now();
